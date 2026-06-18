@@ -74,10 +74,11 @@ def on_connect(client, userdata, flags, rc, properties=None):
         )
 
 
-def on_disconnect(client, userdata, flags, rc):
+def on_disconnect(client, userdata, flags, rc, properties=None):
     """
     Function that triggers when the client disconnects from the broker.
 
+    :param properties: The properties.
     :param client: The MQTT client.
     :param userdata: The user data.
     :param flags: The disconnection flags.
@@ -122,7 +123,6 @@ class MQTTClient:
         self.client.on_connect = on_connect
         self.client.on_message = on_message
         self.client.on_disconnect = on_disconnect
-        self.client.disconnect = self.disconnect
 
     def connect(self):
         """
@@ -133,7 +133,7 @@ class MQTTClient:
         if self.connected:
             return
 
-        self.client.connect(self.host, self.port, keepalive=60)
+        self.client.connect(self.host, self.port)
         self.client.loop_start()
         self.connected = True
         logging.info(
@@ -141,17 +141,6 @@ class MQTTClient:
             self.host,
             self.port
         )
-
-    def disconnect(self):
-        """
-        Disconnects from the MQTT broker and stops the loop.
-        """
-
-        if self.connected:
-            self.client.loop_stop()
-            self.client.disconnect()
-
-        self.connected = False
 
     def publish(self, topic, payload, qos=1):
         """
@@ -172,8 +161,12 @@ mqtt_service = MQTTClient()
 def init_mqtt_client():
     """ Initializes the MQTT client. """
     mqtt_service.connect()
+    logging.info("MQTT Client Initialized")
 
 
 def shutdown_mqtt_client():
     """ Shuts down the MQTT client. """
-    mqtt_service.disconnect()
+    mqtt_service.client.disconnect()
+    mqtt_service.client.loop_stop()
+    mqtt_service.connected = False
+    logging.info("MQTT Client Shutdown")
