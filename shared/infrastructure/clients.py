@@ -5,7 +5,7 @@ from dotenv import load_dotenv
 from flask import json
 from paho.mqtt import client as mqtt_client
 
-from inventory.interfaces.mqtt_services import on_telemetry_message
+from tracking.interfaces.mqtt_services import on_telemetry_message
 
 # Load environment variables from .env file
 load_dotenv()
