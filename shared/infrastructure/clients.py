@@ -1,256 +1,179 @@
 import logging
+import os
 
+from dotenv import load_dotenv
 from flask import json
 from paho.mqtt import client as mqtt_client
 
-from shared.infrastructure.configuration import MQTTConfig
+from inventory.interfaces.mqtt_services import on_telemetry_message
+
+# Load environment variables from .env file
+load_dotenv()
+
+# Define the MQTT subscriptions
+SUBSCRIPTIONS = [
+    "stores/+/telemetry/weight",
+    "stores/+/telemetry/temperature",
+    "stores/+/telemetry/humidity",
+    "stores/+/health"
+]
+
+
+def on_message(client, userdata, msg):
+    """
+    Method to handle incoming MQTT messages.
+    In this, depending on the device topic, the message is processed accordingly to its correspondent context.
+
+    :param client: The MQTT client
+    :param userdata: The user data
+    :param msg: The MQTT message received, containing the topic and the payload
+    """
+
+    try:
+        topic_parts = msg.topic.split("/")
+        device_topic = topic_parts[2]
+
+        match device_topic:
+            case "telemetry":
+                on_telemetry_message(msg, topic_parts)
+            case "health":
+                pass
+
+    except Exception as ex:
+        logging.exception(
+            "Error while processing MQTT message: %s",
+            ex
+        )
+
+
+def on_connect(client, userdata, flags, rc, properties=None):
+    """
+    Function that triggers when the client connects to the broker.
+
+    :param client: The MQTT client.
+    :param userdata: The user data.
+    :param flags: The connection flags.
+    :param rc: The return code.
+    :param properties: The properties.
+    """
+
+    if rc != 0:
+        logging.error(
+            "MQTT Error. RC=%s",
+            rc
+        )
+        return
+
+    logging.info("Connected to MQTT Broker")
+
+    for topic in SUBSCRIPTIONS:
+        client.subscribe(topic, qos=1)
+        logging.info(
+            "Subscribed to %s",
+            topic
+        )
+
+
+def on_disconnect(client, userdata, flags, rc):
+    """
+    Function that triggers when the client disconnects from the broker.
+
+    :param client: The MQTT client.
+    :param userdata: The user data.
+    :param flags: The disconnection flags.
+    :param rc: The return code.
+    """
+
+    logging.info("Disconnected from MQTT Broker with RC=%s", rc)
 
 
 class MQTTClient:
-    def __init__(self, config: MQTTConfig):
-        self.config = config
+    """
+    Class to handle the MQTT client.
+
+    Attributes:
+        host (str): The MQTT broker host.
+        port (int): The MQTT broker port.
+        connected (bool): Flag indicating whether the client is connected.
+        client (mqtt_client.Client): The MQTT client instance.
+    """
+
+    def __init__(self):
+        """
+        Initializes the MQTTClient with the given configuration.
+        """
+
+        self.host = os.getenv('MQTT_HOST')
+        self.port = int(os.getenv('MQTT_PORT'))
         self.connected = False
         self.client = mqtt_client.Client(
-            client_id=config.CLIENT_ID,
-            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2
+            client_id=os.getenv('MQTT_CLIENT_ID'),
+            callback_api_version=mqtt_client.CallbackAPIVersion.VERSION2,
         )
-        self.client.username_pw_set(
-            config.USERNAME,
-            config.PASSWORD,
-        )
-        self.client.on_connect = self.on_connect
-        self.client.on_message = self.on_message
+
+        self.configure()
+
+    def configure(self):
+        """
+        Configures the MQTT client with the necessary callbacks and authentication.
+        """
+
+        self.client.username_pw_set(os.getenv('MQTT_USERNAME'), os.getenv('MQTT_PASSWORD'))
+        self.client.on_connect = on_connect
+        self.client.on_message = on_message
+        self.client.on_disconnect = on_disconnect
+        self.client.disconnect = self.disconnect
 
     def connect(self):
+        """
+        Connects to the MQTT broker and starts the loop to listen for messages.
+        This also subscribes to the specified topics in the configuration.
+        """
+
         if self.connected:
             return
 
-        self.client.connect(
-            self.config.HOST,
-            self.config.PORT,
-            keepalive=60
-        )
-
+        self.client.connect(self.host, self.port, keepalive=60)
         self.client.loop_start()
         self.connected = True
         logging.info(
             "Connected to MQTT at %s:%s",
-            self.config.HOST,
-            self.config.PORT
+            self.host,
+            self.port
         )
 
     def disconnect(self):
-        self.client.loop_stop()
-        self.client.disconnect()
+        """
+        Disconnects from the MQTT broker and stops the loop.
+        """
+
+        if self.connected:
+            self.client.loop_stop()
+            self.client.disconnect()
 
         self.connected = False
 
-    def on_connect(
-            self,
-            client,
-            userdata,
-            flags,
-            rc,
-            properties=None
-    ):
-        if rc != 0:
-            logging.error(
-                "MQTT Error. RC=%s",
-                rc
-            )
-            return
+    def publish(self, topic, payload, qos=1):
+        """
+        Function to publish a message to a specified topic.
 
-        logging.info(
-            "Connected to MQTT Broker"
-        )
+        :param topic: The topic to publish the message to.
+        :param payload: The message to be published.
+        :param qos: The quality of service level.
+        """
 
-        for topic in self.config.SUBSCRIPTIONS:
-            client.subscribe(
-                topic,
-                qos=1
-            )
-            logging.info(
-                "Subscribed to %s",
-                topic
-            )
-
-    def on_message(
-            self,
-            client,
-            userdata,
-            msg
-    ):
-        try:
-            topic_parts = msg.topic.split("/")
-            device_id = topic_parts[1]
-            telemetry_type = topic_parts[3]
-            payload = json.loads(
-                msg.payload.decode()
-            )
-            self.validate_payload(
-                payload
-            )
-
-            handlers = {
-                "weight": self.process_weight,
-                "temperature": self.process_temperature,
-                "humidity": self.process_humidity
-            }
-
-            handler = handlers.get(
-                telemetry_type
-            )
-
-            if handler is None:
-                logging.warning(
-                    "Telemetry type unknown: %s",
-                    telemetry_type
-                )
-
-                return
-
-            response = handler(
-                device_id,
-                payload
-            )
-
-            self.publish_response(
-                device_id,
-                telemetry_type,
-                response
-            )
-
-        except Exception as ex:
-
-            logging.exception(
-                "Error while processing MQTT message: %s",
-                ex
-            )
-
-    def validate_payload(
-            self,
-            payload
-    ):
-
-        required_fields = [
-            "timestamp",
-            "value",
-            "unit"
-        ]
-
-        for field in required_fields:
-
-            if field not in payload:
-                raise ValueError(
-                    f"Required field is missing: {field}"
-                )
-
-        if not isinstance(
-                payload["value"],
-                (int, float)
-        ):
-            raise ValueError(
-                "The value must be a number"
-            )
+        self.client.publish(topic, json.dumps(payload), qos=qos)
 
 
-    def process_weight(
-            self,
-            device_id,
-            payload
-    ):
+# A singleton instance of the MQTTClient
+mqtt_service = MQTTClient()
 
-        value = payload["value"]
-
-        logging.info(
-            "Weight received for device=%s with value=%s",
-            device_id,
-            value
-        )
-
-        return {
-            "status": "ok",
-            "received": value,
-            "unit": payload["unit"]
-        }
-
-    def process_temperature(
-            self,
-            device_id,
-            payload
-    ):
-
-        value = payload["value"]
-
-        logging.info(
-            "Temperature received for device=%s with value=%s",
-            device_id,
-            value
-        )
-
-        return {
-            "status": "ok",
-            "received": value,
-            "unit": payload["unit"]
-        }
-
-    def process_humidity(
-            self,
-            device_id,
-            payload
-    ):
-
-        value = payload["value"]
-
-        logging.info(
-            "Humidity received for device=%s with value=%s",
-            device_id,
-            value
-        )
-
-        return {
-            "status": "ok",
-            "received": value,
-            "unit": payload["unit"]
-        }
-
-    def publish_response(
-            self,
-            device_id,
-            telemetry_type,
-            response
-    ):
-
-        response_topic = (
-            f"store/{device_id}/response/"
-            f"{telemetry_type}"
-        )
-
-        self.client.publish(
-            response_topic,
-            json.dumps(response),
-            qos=1
-        )
-
-        logging.info(
-            "Response send to topic %s",
-            response_topic
-        )
-
-    def publish(
-            self,
-            topic,
-            payload,
-            qos=1
-    ):
-
-        self.client.publish(
-            topic,
-            json.dumps(payload),
-            qos=qos
-        )
-
-mqtt_service = MQTTClient(MQTTConfig())
 
 def init_mqtt_client():
+    """ Initializes the MQTT client. """
     mqtt_service.connect()
+
+
+def shutdown_mqtt_client():
+    """ Shuts down the MQTT client. """
+    mqtt_service.disconnect()
