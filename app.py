@@ -1,17 +1,22 @@
 import atexit
 import logging
-import os
 import signal
 import threading
 
 from flask import Flask
 
-import tracking.application.services
 from shared.infrastructure.clients import init_mqtt_client, shutdown_mqtt_client
 from shared.infrastructure.database import init_db
 
 # Create the Flask application.
 app = Flask(__name__)
+
+# Configure logging.
+logging.basicConfig(
+    filename='app.log',
+    level=logging.INFO,
+    format='%(asctime)s %(levelname)s: %(message)s [in %(pathname)s:%(lineno)d]'
+)
 
 # Lock to ensure that shutdown is only called once.
 _shutdown_lock = threading.Lock()
@@ -36,9 +41,23 @@ def shutdown_app():
 
 def signal_handler(signum, frame):
     """ Handles SIGINT and SIGTERM signals to gracefully shut down the application. """
-    logging.info(f"Received signal {signum}, shutting down server...")
+    app.logger.info(f"Received signal {signum}, shutting down server...")
     shutdown_app()
 
+first_request = True
+
+@app.before_request
+def setup():
+    """ Initializes the MQTT client and the database before handling any requests. """
+
+    global first_request
+
+    if first_request:
+        first_request = False
+        init_mqtt_client()
+        app.logger.info("MQTT Client Initialized")
+        init_db()
+        app.logger.info("Database Initialized")
 
 # Register the shutdown function to be called when the program exits.
 atexit.register(shutdown_app)
@@ -50,9 +69,5 @@ signal.signal(signal.SIGTERM, signal_handler)  # Closing process in Docker
 
 if __name__ == '__main__':
     """ Runs the application. """
-    if os.environ.get("WERKZEUG_RUN_MAIN") != "true":
-        # Only runs a connection once when the main process starts, not on each reload.
-        init_mqtt_client()
-        init_db()
-    logging.info(app.url_map)
-    app.run(debug=True)
+    app.logger.info(app.url_map)
+    app.run(host = "0.0.0.0", port = 5000, debug = True)
