@@ -1,6 +1,6 @@
 import logging
 
-from flask import json, jsonify
+from flask import json
 
 from tracking.application.services import WeightRecordApplicationService
 
@@ -60,8 +60,8 @@ def process_weight(device_id, payload):
     :param payload: The payload of the telemetry message.
     """
 
-    value = payload["value"]
-    created_at = payload["created_at"]
+    value = float(payload["value"])
+    created_at = str(payload["created_at"])
 
     logging.info(
         "Weight received for device=%s with value=%s",
@@ -75,12 +75,13 @@ def process_weight(device_id, payload):
         created_at=created_at
     )
 
-    response = jsonify({
+    response = {
+        "status": "ok",
         "id": record.weight_record_id,
         "device_id": record.device_id,
         "weight": record.value,
         "created_at": record.created_at.isoformat()
-    })
+    }
 
     # Publishes the response to the response topic
     publish_telemetry_response(device_id, "weight", response)
@@ -149,7 +150,6 @@ def on_telemetry_message(msg, topic_parts):
             return
 
         response = handler(device_id, payload)
-        publish_telemetry_response(device_id, telemetry_type, response)
 
     except Exception as ex:
         logging.exception(
